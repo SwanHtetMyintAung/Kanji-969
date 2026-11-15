@@ -460,6 +460,8 @@ extern "C" {
 	RAVEN_API void Rwidget_set_font(Rid widget, Rid font);
 	/** @return The font given to the widget itself, or R_INVALID_ID. */
 	RAVEN_API Rid Rwidget_get_font(Rid widget);
+	RAVEN_API void Rlabel_set_selectable(Rid id, int selectable);
+	RAVEN_API int  Rlabel_is_selectable(Rid id);
 
 #ifdef __cplusplus
 } /* extern "C" */

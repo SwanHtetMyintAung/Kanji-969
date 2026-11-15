@@ -21,6 +21,8 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/${PROJECT_NAME}/$<CONFIG>-$<PLATFORM_ID>"
 )
 
+
+# NOTE: XML EMBEDDING
 set(XML_EMBED_SCRIPT
     "${CMAKE_SOURCE_DIR}/emb_xml.py"
 )
@@ -35,6 +37,40 @@ set(XML_GENERATED_DIR
 
 set(XML_GENERATED_HEADER
     "${XML_GENERATED_DIR}/window_embedded.h"
+)
+
+# NOTE: JSON EMBEDDING
+set(JSON_EMBED_SCRIPT
+    "${CMAKE_SOURCE_DIR}/json_to_c.py"
+)
+
+set(JSON_SOURCE
+    "${CMAKE_SOURCE_DIR}/assets/data/soumatome_n3_kanji_with_hiragana.json"
+)
+
+set(JSON_GENERATED_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/Release"
+)
+
+set(JSON_GENERATED_HEADER
+    "${JSON_GENERATED_DIR}/soumatome_json.h"
+)
+
+# NOTE: WALLPAPER EMBEDDING
+set(IMAGE_EMBED_SCRIPT
+    "${CMAKE_SOURCE_DIR}/embed_image.py"
+)
+
+set(IMAGE_SOURCE
+    "${CMAKE_SOURCE_DIR}/assets/wallpaper.jpg"
+)
+
+set(IMAGE_GENERATED_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/Release"
+)
+
+set(IMAGE_GENERATED_HEADER
+    "${IMAGE_GENERATED_DIR}/wallpaper.h"
 )
 
 add_custom_command(
@@ -58,14 +94,61 @@ add_custom_command(
     VERBATIM
 )
 
+add_custom_command(
+    OUTPUT "${JSON_GENERATED_HEADER}"
+
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${JSON_GENERATED_DIR}"
+
+    COMMAND "${Python3_EXECUTABLE}"
+            "${JSON_EMBED_SCRIPT}"
+            "${JSON_SOURCE}"
+            "${JSON_GENERATED_HEADER}"
+            --name "${soumatome_json}"
+
+    MAIN_DEPENDENCY "${JSON_SOURCE}"
+
+    DEPENDS
+        "${JSON_EMBED_SCRIPT}"
+
+    COMMENT "Embedding json into C header..."
+
+    VERBATIM
+)
+
+add_custom_command(
+    OUTPUT "${IMAGE_GENERATED_HEADER}"
+
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${IMAGE_GENERATED_DIR}"
+
+    COMMAND "${Python3_EXECUTABLE}"
+            "${IMAGE_EMBED_SCRIPT}"
+            "${IMAGE_SOURCE}"
+            -o "${IMAGE_GENERATED_HEADER}"
+
+    MAIN_DEPENDENCY "${IMAGE_SOURCE}"
+
+    DEPENDS
+        "${IMAGE_EMBED_SCRIPT}"
+
+    COMMENT "Embedding wallpaper into C header..."
+
+    VERBATIM
+)
+
 # Only add the generated header to Release builds.
 target_sources(${PROJECT_NAME} PRIVATE
     "$<$<CONFIG:Release>:${XML_GENERATED_HEADER}>"
+    "$<$<CONFIG:Release>:${JSON_GENERATED_HEADER}>"
+    "$<$<CONFIG:Release>:${IMAGE_GENERATED_HEADER}>"
 )
 
 # Make the generated header discoverable by #include.
 target_include_directories(${PROJECT_NAME} PRIVATE
     "$<$<CONFIG:Release>:${XML_GENERATED_DIR}>"
+    "$<$<CONFIG:Release>:${JSON_GENERATED_DIR}>"
+    "$<$<CONFIG:Release>:${IMAGE_GENERATED_DIR}>"
 )
 
 # Custom compile definition for the embedded XML build.

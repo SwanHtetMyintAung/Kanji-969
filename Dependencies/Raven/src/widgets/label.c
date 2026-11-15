@@ -29,6 +29,14 @@ typedef struct rvn_label_t {
 	void* link_user;
 	/** Result of Rlabel_get_plain_text. */
 	char* plain;
+
+	/** Selectable text (Rlabel_set_selectable): the selection is [min, max) of the two ends, in bytes of the text. */
+	int selectable;
+	int sel_anchor;
+	int sel_caret;
+	int selecting;
+	/** Direction of the last paint, so that a click lands where the text was drawn. */
+	int rtl;
 } rvn_label_t;
 
 static void rvn_label_init(rvn_widget_t* widget) {
@@ -39,12 +47,35 @@ static void rvn_label_init(rvn_widget_t* widget) {
 	label->pressed_link = -1;
 }
 
+/* Only plain text is selectable: formatted (Markdown) text keeps its links. */
+static int rvn_label_can_select(const rvn_label_t* label) {
+	return label->selectable && !label->markdown;
+}
+
+static RCursor rvn_label_cursor(const rvn_label_t* label) {
+	return rvn_label_can_select(label) ? R_CURSOR_IBEAM : (RCursor)0;
+}
+
+/* The mouse goes to the label when it has links to click or text to select. */
+static void rvn_label_update_hit(rvn_label_t* label) {
+	int hit = label->markdown ? (label->md && rvn_md_link_count(label->md) > 0) : label->selectable;
+	if (hit) label->base.flags &= ~RVN_WF_NO_HIT;
+	else label->base.flags |= RVN_WF_NO_HIT;
+}
+
+static void rvn_label_clear_selection(rvn_label_t* label) {
+	label->sel_anchor = label->sel_caret = 0;
+	label->selecting = R_FALSE;
+}
+
 static void rvn_label_forget(rvn_label_t* label) {
 	rvn_md_free(label->md);
 	label->md = NULL;
 	label->hot_link = -1;
 	label->pressed_link = -1;
-	label->base.cursor = (RCursor)0;
+	label->base.cursor = rvn_label_cursor(label);
+	/* (the offsets of the selection belong to the old text) */
+	rvn_label_clear_selection(label);
 }
 
 static void rvn_label_destroy(rvn_widget_t* widget) {
@@ -63,8 +94,7 @@ static rvn_md_t* rvn_label_md(rvn_label_t* label) {
 	if (!label->md) {
 		label->md = rvn_md_parse(label->text);
 		/* a label does not take the mouse, unless it has links to click */
-		if (rvn_md_link_count(label->md) > 0) label->base.flags &= ~RVN_WF_NO_HIT;
-		else label->base.flags |= RVN_WF_NO_HIT;
+		rvn_label_update_hit(label);
 	}
 	return label->md;
 }
@@ -103,6 +133,107 @@ static int rvn_label_lines(const rvn_label_t* label, rvn_font_t* font, float siz
 
 	if (max_width) *max_width = widest;
 	return count;
+}
+
+/* ---------------------------------------------------------------------------
+ *  Selection
+ * ------------------------------------------------------------------------- */
+
+static int rvn_label_sel_min(const rvn_label_t* label) { return rvn_mini(label->sel_anchor, label->sel_caret); }
+static int rvn_label_sel_max(const rvn_label_t* label) { return rvn_maxi(label->sel_anchor, label->sel_caret); }
+static int rvn_label_has_selection(const rvn_label_t* label) { return label->sel_anchor != label->sel_caret; }
+
+static float rvn_label_align(const rvn_label_t* label, int rtl) {
+	float align = label->align == R_TEXT_ALIGN_CENTER ? 0.5f : (label->align == R_TEXT_ALIGN_RIGHT ? 1.0f : 0.0f);
+	return rtl ? 1.0f - align : align;
+}
+
+typedef struct rvn_label_pick_t {
+	const rvn_label_t* label;
+	rvn_font_t* font;
+	float size;
+	float align;
+	float x;
+	int target;
+	int offset;
+} rvn_label_pick_t;
+
+static void rvn_label_pick_line(const char* line, int length, float width, int index, void* context) {
+	rvn_label_pick_t* pick = (rvn_label_pick_t*)context;
+	float x = (pick->label->base.rect.w - width) * pick->align;
+	int start = (int)(line - pick->label->text);
+	/* the lines after the target are ignored: a point below the text lands in the last line */
+	if (index > pick->target) return;
+	pick->offset = length > 0 ? start + rvn_text_offset_at(pick->font, pick->size, line, length, pick->x - x) : start;
+}
+
+/* The offset in the text (a boundary between two characters) nearest to a point of the label. */
+static int rvn_label_offset_at(const rvn_label_t* label, float x, float y) {
+	rvn_font_t* font = rvn_font_resolve(label->font);
+	rvn_font_metrics_t metrics;
+	rvn_label_pick_t pick;
+	float size;
+	if (!font || !label->text) return 0;
+	size = rvn_widget_font_size(&label->base, label->size);
+	rvn_font_metrics(font, size, &metrics);
+	pick.label = label;
+	pick.font = font;
+	pick.size = size;
+	pick.align = rvn_label_align(label, label->rtl);
+	pick.x = x;
+	pick.target = metrics.line_height > 0.0f ? rvn_maxi(0, (int)floorf(y / metrics.line_height)) : 0;
+	pick.offset = 0;
+	rvn_label_lines(label, font, size, rvn_label_wraps(label) ? label->base.rect.w : 0.0f, NULL, rvn_label_pick_line, &pick);
+	return rvn_clampi(pick.offset, 0, (int)strlen(label->text));
+}
+
+typedef struct rvn_label_highlight_t {
+	const rvn_label_t* label;
+	RPainter* painter;
+	rvn_font_t* font;
+	float size;
+	float line_height;
+	float align;
+	int from;
+	int to;
+	rvn_color_t color;
+} rvn_label_highlight_t;
+
+static void rvn_label_highlight_line(const char* line, int length, float width, int index, void* context) {
+	rvn_label_highlight_t* highlight = (rvn_label_highlight_t*)context;
+	int start = (int)(line - highlight->label->text);
+	int begin = rvn_maxi(highlight->from, start) - start;
+	int end = rvn_mini(highlight->to, start + length) - start;
+	float x, x0, x1;
+	if (end <= begin) return;
+	x = (highlight->label->base.rect.w - width) * highlight->align;
+	x0 = rvn_text_width(highlight->font, highlight->size, line, begin);
+	x1 = rvn_text_width(highlight->font, highlight->size, line, end);
+	rvn_paint_rect(highlight->painter, rvn_rect(x + x0, highlight->line_height * (float)index, x1 - x0, highlight->line_height),
+		highlight->color);
+}
+
+/* A double click selects the word under the pointer: the spaces and line breaks separate words. */
+static int rvn_label_is_break(char c) {
+	return c == ' ' || c == '\t' || c == '\n';
+}
+
+static void rvn_label_select_word(rvn_label_t* label, int offset) {
+	const char* text = label->text ? label->text : "";
+	int length = (int)strlen(text);
+	int begin = rvn_mini(offset, length), end = begin;
+	while (begin > 0 && !rvn_label_is_break(text[begin - 1])) begin--;
+	while (end < length && !rvn_label_is_break(text[end])) end++;
+	label->sel_anchor = begin;
+	label->sel_caret = end;
+}
+
+static void rvn_label_copy(const rvn_label_t* label) {
+	char* copy;
+	if (!label->text || !rvn_label_has_selection(label)) return;
+	copy = rvn_strndup(label->text + rvn_label_sel_min(label), (size_t)(rvn_label_sel_max(label) - rvn_label_sel_min(label)));
+	Rclipboard_set_text(copy);
+	rvn_free(copy);
 }
 
 static rvn_vec2_t rvn_label_measure(rvn_widget_t* widget) {
@@ -183,8 +314,23 @@ static void rvn_label_paint(rvn_widget_t* widget, RPainter* painter) {
 	paint.align = label->align == R_TEXT_ALIGN_CENTER ? 0.5f : (label->align == R_TEXT_ALIGN_RIGHT ? 1.0f : 0.0f);
 	if (painter->rtl) paint.align = 1.0f - paint.align;
 	paint.color = rvn_widget_text_color(widget, painter);
+	label->rtl = painter->rtl;
 
 	if (clipped) rvn_paint_push_clip(painter, rvn_rect(0.0f, 0.0f, widget->rect.w, widget->rect.h));
+	/* the selection is drawn under the text, only while the label has the focus (the mouse gave it) */
+	if (rvn_label_can_select(label) && rvn_label_has_selection(label) && (widget->flags & RVN_WF_FOCUSED)) {
+		rvn_label_highlight_t highlight;
+		highlight.label = label;
+		highlight.painter = painter;
+		highlight.font = font;
+		highlight.size = paint.size;
+		highlight.line_height = paint.line_height;
+		highlight.align = paint.align;
+		highlight.from = rvn_label_sel_min(label);
+		highlight.to = rvn_label_sel_max(label);
+		highlight.color = rvn_widget_color(widget, R_COLOR_SELECTION);
+		rvn_label_lines(label, font, paint.size, rvn_label_wraps(label) ? widget->rect.w : 0.0f, NULL, rvn_label_highlight_line, &highlight);
+	}
 	rvn_label_lines(label, font, paint.size, rvn_label_wraps(label) ? widget->rect.w : 0.0f, NULL, rvn_label_paint_line, &paint);
 	if (clipped) rvn_paint_pop_clip(painter);
 }
@@ -214,7 +360,8 @@ static void rvn_label_follow(rvn_widget_t* widget, int link) {
 	rvn_free(url);
 }
 
-static int rvn_label_event(rvn_widget_t* widget, const REvent* event) {
+/* Formatted text: the links. */
+static int rvn_label_link_event(rvn_widget_t* widget, const REvent* event) {
 	rvn_label_t* label = (rvn_label_t*)widget;
 	int link;
 	if (!label->markdown || !label->md) return R_FALSE;
@@ -246,14 +393,95 @@ static int rvn_label_event(rvn_widget_t* widget, const REvent* event) {
 	}
 }
 
+/* Plain text that can be selected: the mouse, then Ctrl+C (Cmd+C) copies it. */
+static int rvn_label_select_event(rvn_widget_t* widget, const REvent* event) {
+	rvn_label_t* label = (rvn_label_t*)widget;
+	int offset;
+	switch (event->type) {
+		case R_EVENT_MOUSE_DOWN:
+			if (event->button != R_MOUSE_LEFT) return R_FALSE;
+			offset = rvn_label_offset_at(label, event->local_x, event->local_y);
+			if (event->clicks >= 3) {
+				label->sel_anchor = 0;
+				label->sel_caret = label->text ? (int)strlen(label->text) : 0;
+			} else if (event->clicks == 2) {
+				rvn_label_select_word(label, offset);
+			} else {
+				label->sel_caret = offset;
+				if (!(event->modifiers & R_MOD_SHIFT)) label->sel_anchor = offset;
+				label->selecting = R_TRUE;
+			}
+			/* a label is not a stop of the Tab key: it takes the focus when it is clicked, to receive Ctrl+C */
+			widget->flags |= RVN_WF_FOCUSABLE;
+			rvn_widget_focus(widget);
+			rvn_widget_capture_mouse(widget);
+			rvn_widget_invalidate_paint(widget);
+			return R_TRUE;
+		case R_EVENT_MOUSE_MOVE:
+			if (!label->selecting) return R_FALSE;
+			label->sel_caret = rvn_label_offset_at(label, event->local_x, event->local_y);
+			rvn_widget_invalidate_paint(widget);
+			return R_TRUE;
+		case R_EVENT_MOUSE_UP:
+			if (event->button != R_MOUSE_LEFT) return R_FALSE;
+			label->selecting = R_FALSE;
+			rvn_widget_release_mouse(widget);
+			return R_TRUE;
+		case R_EVENT_FOCUS_LOST:
+			rvn_label_clear_selection(label);
+			widget->flags &= ~RVN_WF_FOCUSABLE;
+			rvn_widget_invalidate_paint(widget);
+			return R_TRUE;
+		case R_EVENT_KEY_DOWN:
+			if (!(widget->flags & RVN_WF_FOCUSED) || !(event->modifiers & (R_MOD_CTRL | R_MOD_SUPER))) return R_FALSE;
+			if (event->key == R_KEY_C) {
+				rvn_label_copy(label);
+				return R_TRUE;
+			}
+			if (event->key == R_KEY_A) {
+				label->sel_anchor = 0;
+				label->sel_caret = label->text ? (int)strlen(label->text) : 0;
+				rvn_widget_invalidate_paint(widget);
+				return R_TRUE;
+			}
+			return R_FALSE;
+		default:
+			return R_FALSE;
+	}
+}
+
+static int rvn_label_event(rvn_widget_t* widget, const REvent* event) {
+	if (rvn_label_can_select((rvn_label_t*)widget)) return rvn_label_select_event(widget, event);
+	return rvn_label_link_event(widget, event);
+}
+
 static void rvn_label_set_markdown(rvn_widget_t* widget, int enabled) {
 	rvn_label_t* label = (rvn_label_t*)widget;
 	enabled = enabled != 0;
 	if (label->markdown == enabled) return;
 	label->markdown = enabled;
 	rvn_label_forget(label);
-	if (!enabled) widget->flags |= RVN_WF_NO_HIT;
+	if (!enabled) rvn_label_update_hit(label);
 	rvn_widget_invalidate_layout(widget);
+}
+
+static void rvn_label_set_selectable(rvn_widget_t* widget, int enabled) {
+	rvn_label_t* label = (rvn_label_t*)widget;
+	enabled = enabled != 0;
+	if (label->selectable == enabled) return;
+	label->selectable = enabled;
+	if (!enabled) {
+		/* (the focus the label took when clicked goes with it) */
+		Rwidget_set_focusable(widget->id, R_FALSE);
+		rvn_widget_release_mouse(widget);
+	}
+	rvn_label_clear_selection(label);
+	/* Markdown text is not selectable: the flag is kept for when it is turned off */
+	if (!label->markdown) {
+		rvn_label_update_hit(label);
+		widget->cursor = rvn_label_cursor(label);
+	}
+	rvn_widget_invalidate_paint(widget);
 }
 
 static int rvn_label_set_attribute(rvn_widget_t* widget, const char* name, const char* value) {
@@ -279,6 +507,9 @@ static int rvn_label_set_attribute(rvn_widget_t* widget, const char* name, const
 	} else if (RVN_ATTR("Markdown")) {
 		if (!rvn_parse_bool(value, &flag)) return R_FALSE;
 		rvn_label_set_markdown(widget, flag);
+	} else if (RVN_ATTR("Selectable")) {
+		if (!rvn_parse_bool(value, &flag)) return R_FALSE;
+		rvn_label_set_selectable(widget, flag);
 	} else if (RVN_ATTR("Color")) {
 		if (!rvn_parse_color(value, &color)) return R_FALSE;
 		rvn_widget_set_color(widget, R_COLOR_TEXT, color);
@@ -375,6 +606,16 @@ void Rlabel_set_markdown(Rid id, int enabled) {
 int Rlabel_get_markdown(Rid id) {
 	RVN_WIDGET(widget, id, R_WIDGET_LABEL, R_FALSE);
 	return ((rvn_label_t*)widget)->markdown;
+}
+
+void Rlabel_set_selectable(Rid id, int selectable) {
+	RVN_WIDGET_VOID(widget, id, R_WIDGET_LABEL);
+	rvn_label_set_selectable(widget, selectable);
+}
+
+int Rlabel_is_selectable(Rid id) {
+	RVN_WIDGET(widget, id, R_WIDGET_LABEL, R_FALSE);
+	return ((rvn_label_t*)widget)->selectable;
 }
 
 void Rlabel_set_link_callback(Rid id, RLabelLinkCallback callback, void* user_data) {

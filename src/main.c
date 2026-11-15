@@ -7,14 +7,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 #include "cJSON.h"
 #include "cvector.h"
 #include "jsonreader.h"
 #include "raven/raven_core.h"
-#include <time.h>
+#include "raven/raven_resources.h"
+#include "raven/raven_widget.h"
 
 #ifdef APP_EMBED_XML
 #include "window_embedded.h"
+#include "soumatome_json.h"
+#include "wallpaper.h"
 #endif
 // NOTE: This part here is windows bullshit, this makes sure that in release mode, it compile fine, normally, u don't need this in command line apps
 #ifdef _WIN32
@@ -55,6 +62,8 @@ static size_t selected_day_index = 0;
 static size_t selected_kanji_index = 0;
 static Rid chapter_menu = R_INVALID_ID;
 static Rid chapter_list = R_INVALID_ID;
+
+static int enter_should_reveal = 1;
 
 static void initsoumatome() {
 	if (!parse_soumatome(json, &root))
@@ -489,15 +498,30 @@ static void switcher_index_to_1(Rid sender, const char* action, void* user_data)
 	Rswitcher_set_index(switcher, 1);
 }
 
+static void on_enter(Rid sender, const char* action, void* user_data) {
+    (void)sender;
+    (void)user_data;
+    if (enter_should_reveal) {
+        switcher_index_to_1(sender, action, user_data);
+        enter_should_reveal = 0;
+    } else {
+        next_kanji(sender, action, user_data);
+        enter_should_reveal = 1;
+    }
+}
 
 int main(void) {
 	srand(time(NULL));
-	json = cJSON_Parse(parseJson("assets/data/soumatome_n3_kanji_with_hiragana.json"));
-	if(!json) {
+#ifdef APP_EMBED_XML
+    json = cJSON_ParseWithLength(soumatome_n3_kanji_with_hiragana, (size_t)soumatome_n3_kanji_with_hiragana_size);
+#else
+    json = cJSON_Parse(parseJson("assets/data/soumatome_n3_kanji_with_hiragana.json"));
+#endif
+    if(!json) {
 		printf("Failed to parse json\n");
 		return 1;
 	}
-	initsoumatome();
+    initsoumatome();
     if (!Rinit(R_BACKEND_VULKAN)) return 1;
 	//events here
     Raction_bind("app.quit", on_quit, NULL);
@@ -505,6 +529,7 @@ int main(void) {
 	Raction_bind("switcher.index.1", switcher_index_to_1, NULL);
 	Raction_bind("kanji.next", next_kanji, NULL);
 	Raction_bind("kanji.previous", previous_kanji, NULL);
+	Raction_bind("study.enter", on_enter, NULL);
 #ifdef APP_EMBED_XML
     windowID = Rwindow_create_from_xml(
         hello_xml,
@@ -516,6 +541,35 @@ int main(void) {
     );
 #endif
 	if (windowID == R_INVALID_ID)  return 1; 
+    Rid kanji = Rwidget_find(windowID, "kanji");
+    Rid meaning = Rwidget_find(windowID, "meaning");
+    Rid example = Rwidget_find(windowID, "example");
+    Rid image = Rwidget_find(windowID, "image");
+
+    Rlabel_set_selectable(kanji, R_TRUE);
+    Rlabel_set_selectable(meaning, R_TRUE);
+    Rlabel_set_selectable(example, R_TRUE);
+
+#ifdef APP_EMBED_XML
+    int width, height, channels;
+
+    unsigned char* pixels = stbi_load_from_memory(
+        wallpaper_data,
+        WALLPAPER_SIZE,
+        &width,
+        &height,
+        &channels,
+        4                       // Force RGBA
+    );
+
+    if (pixels == NULL) {
+        printf("Failed to decode wallpaper: %s\n", stbi_failure_reason());
+        return 1;
+    }
+    Rid texture = Rtexture_create_from_pixels(pixels, width, height);
+    stbi_image_free(pixels);
+    Rimage_set_texture(image, texture);
+#endif
 
 	chapter_list = Rwidget_find(windowID, "chapter_list");
 	Rwindow_set_event_hook(
