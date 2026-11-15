@@ -1,11 +1,27 @@
-### This is a simple template for raven
+# Kanji Practice — Soumatome Flashcards
 
-resources folder is to add metadata for the executable, like icon
-remember to replace the data with yours, app.ico file with your own
+A flashcard application designed to help Japanese language learners study and review kanji organized by the **Nihongo Soumatome (日本語総まとめ)** textbook curriculum.
 
-assets folder is meant for xml files. you should open that folder inside raven designer.
+## Features
 
-emb_xml.py file is a python script that turns xml file into a C string so that
-when you publish your app, u don't need to add xml file explicitly, that python script
-is optional. the script reads xml file inside assets folder and turn it into C file to 
-src folder.
+- **Curriculum-Based Navigation:** Select specific **Weeks** and **Days** matching the *Nihongo Soumatome* kanji book structure.
+- **Interactive Flashcards:** Review targeted daily kanji sets with flip-card mechanics to test readings, meanings, and compound words.
+- **Bite-Sized Study Sessions:** Focus on one day's lesson at a time without getting overwhelmed by massive flashcard decks.
+
+## How It Works
+
+1. Open the app and select your target **Week** and **Day** from the *Soumatome* curriculum.
+2. View the kanji prompt on the front of the flashcard.
+3. Flip the card to check the readings (*Onyomi* / *Kunyomi*), English meaning, and example vocabulary.
+4. Move through the daily deck at your own pace to reinforce memorization.
+
+## Roadmap (This is bullshit section)
+
+- [ ] Spaced repetition (SRS) tracking for difficult kanji
+- [ ] Support for multiple JLPT levels (N3, N2, N1)
+- [ ] Audio pronunciation for example words
+- [ ] Stroke order animations
+
+---
+
+*Note: This is an independent study companion and is not affiliated with or endorsed by ASK Publishing or the official Nihongo Soumatome series.*

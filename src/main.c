@@ -239,6 +239,13 @@ static void on_chapter_selected(
 
     // Close the chapter list.
     Rwidget_set_visibility(list_view, R_COLLAPSED);
+
+	//we need to hide the meaning and example containers when a new chapter is selected
+    Rid meaning = Rwidget_find(windowID, "meaning_container");
+    Rid example = Rwidget_find(windowID, "example_container");
+
+    Rwidget_set_visibility(meaning, R_HIDDEN);
+    Rwidget_set_visibility(example, R_HIDDEN);
 }
 
 static void on_chapter_clicked(Rid item, void* user_data)
